@@ -31,6 +31,8 @@ export interface ThreadRow {
   walletAddress: string | null;
   discovererAgentId: string;
   discoveryMsgId: string;
+  kind: string; // 'anomaly' (default) | 'request' (directed-delegation bounty thread)
+  bounty: number; // $PANG paid to the fulfiller (0 for normal anomaly threads)
   status: ThreadStatus;
   conclusion: string | null; // accepted synthesis conclusion
   conclusionMsgId: string | null;
@@ -87,6 +89,8 @@ CREATE TABLE IF NOT EXISTS threads (
   contractAddress TEXT NOT NULL,
   txHash TEXT,
   walletAddress TEXT,
+  kind TEXT NOT NULL DEFAULT 'anomaly',
+  bounty INTEGER NOT NULL DEFAULT 0,
   discovererAgentId TEXT NOT NULL,
   discoveryMsgId TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',
@@ -166,6 +170,10 @@ export class Db {
     // Robust anti-replay key: (signer, nonce). Immune to ECDSA signature malleability and also
     // covers sig-less coordinator-relayed messages. Created here so the column exists first.
     this.raw.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_messages_from_nonce ON messages(fromAddress, nonce) WHERE nonce IS NOT NULL`);
+    // Directed-delegation: threads gain a kind + bounty (request threads carry a $PANG bounty).
+    const tcols = this.raw.prepare(`PRAGMA table_info(threads)`).all() as { name: string }[];
+    if (!tcols.some((c) => c.name === "kind")) this.raw.exec(`ALTER TABLE threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'anomaly'`);
+    if (!tcols.some((c) => c.name === "bounty")) this.raw.exec(`ALTER TABLE threads ADD COLUMN bounty INTEGER NOT NULL DEFAULT 0`);
   }
 
   // ── agents ──────────────────────────────────────────────────
@@ -206,8 +214,8 @@ export class Db {
   createThread(t: Omit<ThreadRow, "status" | "conclusion" | "conclusionMsgId" | "resolvedAt" | "resolvedCorrect">): void {
     this.raw
       .prepare(
-        `INSERT INTO threads (id, chain, anomalyType, contractAddress, txHash, walletAddress, discovererAgentId, discoveryMsgId, status, createdAt, targetResolveAt)
-         VALUES (@id, @chain, @anomalyType, @contractAddress, @txHash, @walletAddress, @discovererAgentId, @discoveryMsgId, 'open', @createdAt, @targetResolveAt)`,
+        `INSERT INTO threads (id, chain, anomalyType, contractAddress, txHash, walletAddress, kind, bounty, discovererAgentId, discoveryMsgId, status, createdAt, targetResolveAt)
+         VALUES (@id, @chain, @anomalyType, @contractAddress, @txHash, @walletAddress, @kind, @bounty, @discovererAgentId, @discoveryMsgId, 'open', @createdAt, @targetResolveAt)`,
       )
       .run(t);
   }

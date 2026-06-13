@@ -92,6 +92,8 @@ export class Intelligence {
         contractAddress: body.contractAddress,
         txHash: body.txHash ?? null,
         walletAddress: body.walletAddress ?? null,
+        kind: "anomaly",
+        bounty: 0,
         discovererAgentId: agentId,
         discoveryMsgId: mId,
         createdAt: now,
@@ -101,6 +103,41 @@ export class Intelligence {
         id: mId,
         threadId: tId,
         type: "discovery",
+        agentId,
+        fromAddress: address,
+        parent: message.parent ?? null,
+        body: JSON.stringify(body),
+        sig: message.sig ?? null,
+        nonce: message.nonce,
+        createdAt: now,
+      });
+      return { ok: true, threadId: tId, messageId: mId };
+    }
+
+    if (message.type === "request") {
+      // Directed delegation: open a REQUEST thread carrying a bounty. Fulfilling it = an
+      // investigation on this thread; scoring that investigation useful pays the bounty (scoring.ts).
+      const body = message.body;
+      const tId = threadId();
+      const mId = messageId();
+      this.db.createThread({
+        id: tId,
+        chain: body.chain,
+        anomalyType: "Request · " + body.requestType,
+        contractAddress: body.contractAddress,
+        txHash: body.txHash ?? null,
+        walletAddress: body.walletAddress ?? null,
+        kind: "request",
+        bounty: body.bounty,
+        discovererAgentId: agentId,
+        discoveryMsgId: mId,
+        createdAt: now,
+        targetResolveAt: now + this.cfg.synthesisWindowHours * 3600,
+      });
+      this.db.addMessage({
+        id: mId,
+        threadId: tId,
+        type: "request",
         agentId,
         fromAddress: address,
         parent: message.parent ?? null,

@@ -109,6 +109,22 @@ export class Scoring {
         txHash,
       });
       this.db.scoreMessage(messageId, finalScore, useful, nowSeconds());
+
+      // Directed delegation: a first-unique useful investigation that fulfils an open REQUEST thread
+      // also pays its bounty (same mint mechanism), then marks the request fulfilled. The bounty mint
+      // is cap-checked separately; if it trips the cap the request stays open + the normal reward stands.
+      if (msg.type === "investigation") {
+        const reqThread = this.db.getThread(msg.threadId);
+        if (reqThread && reqThread.kind === "request" && reqThread.bounty > 0 && reqThread.status === "open") {
+          const bountyAmt = BigInt(reqThread.bounty) * 10n ** 18n;
+          if (this.mintAllowed(bountyAmt, msg.agentId)) {
+            const btx = await this.chain.mintReward(to, bountyAmt);
+            this.db.addReward({ agentId: msg.agentId, threadId: reqThread.id, messageId, amount: bountyAmt.toString(), reason: "request bounty", txHash: btx });
+            this.db.resolveThread(reqThread.id, true, nowSeconds());
+            this.db.audit("coordinator", "request-fulfilled", { threadId: reqThread.id, fulfiller: msg.agentId, bounty: reqThread.bounty });
+          }
+        }
+      }
     } else {
       this.db.scoreMessage(messageId, finalScore, useful, nowSeconds());
     }

@@ -253,6 +253,47 @@ test("auto-resolver: complete-verified-work resolves correct (mints synthesis); 
   }
 });
 
+test("directed delegation: a fulfilling investigation earns the normal reward + the request bounty", async () => {
+  const dbPath = tmpDbPath();
+  const db = new Db(dbPath);
+  const mock = new MockChain();
+  const cfg: Config = { ...config, evidenceRpcs: {} };
+  const intel = new Intelligence(db, cfg);
+  const scoring = new Scoring(db, mock, cfg);
+
+  db.upsertAgent({ agentId: A_ID, owner: A_OWNER, agentWallet: A_WALLET }); // requester
+  db.upsertAgent({ agentId: B_ID, owner: B_WALLET, agentWallet: B_WALLET }); // fulfiller
+
+  try {
+    // A posts a directed REQUEST with a 5 $PANG bounty.
+    const req = intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "request",
+      body: { requestType: "Contract Risk Assessment", chain: "PulseChain", contractAddress: CONTRACT, txHash: TX, bounty: 5 },
+    } as Message);
+    assert.equal(req.ok, true); if (!req.ok) return;
+    assert.equal(db.getThread(req.threadId)!.kind, "request");
+    assert.equal(db.getThread(req.threadId)!.bounty, 5);
+    assert.equal(db.getThread(req.threadId)!.status, "open");
+
+    // B fulfils it with an investigation on the request thread.
+    const inv = intel.submit(B_ID, B_WALLET, {
+      v: "0", nonce: randomUUID(), from: B_WALLET, type: "investigation", task: req.threadId,
+      body: { investigationType: "Contract Risk Assessment", evidence: "owner can mint and tax is togglable — high risk." },
+    } as Message);
+    assert.equal(inv.ok, true); if (!inv.ok) return;
+
+    assert.equal(await mock.tokenBalanceOf(B_WALLET), 0n);
+    // Score it useful → B earns investigation 5 + bounty 5 = 10; the request is marked fulfilled.
+    assert.equal((await scoring.scoreMessage(inv.messageId, true)).ok, true);
+    assert.equal(await mock.tokenBalanceOf(B_WALLET), 10n * PANG, "fulfiller earns investigation (5) + bounty (5)");
+    assert.equal(db.getThread(req.threadId)!.status, "resolved", "request marked fulfilled");
+    assert.equal(db.getAgent(B_ID)!.reputation, 10, "B reputation = 10 PANG earned (5 + 5 bounty)");
+  } finally {
+    db.close();
+    cleanup(dbPath);
+  }
+});
+
 test("per-agent mint cap: one agent's daily issuance is capped; a different agent under cap still mints", async () => {
   const dbPath = tmpDbPath();
   const db = new Db(dbPath);

@@ -70,7 +70,7 @@ export const CHAINS = [
 export type Chain = (typeof CHAINS)[number];
 
 /** The three message types of Signal Hive. */
-export const MESSAGE_TYPES = ["discovery", "investigation", "synthesis"] as const;
+export const MESSAGE_TYPES = ["discovery", "investigation", "synthesis", "request"] as const;
 
 /**
  * Wire-protocol versions the coordinator accepts. "0" is the current (and only live) version.
@@ -141,6 +141,25 @@ export const SynthesisBody = z
   .strict();
 export type SynthesisBody = z.infer<typeof SynthesisBody>;
 
+/** Bounty ceiling per request (whole $PANG). Bounded so a request can't pledge an absurd amount;
+ *  the daily mint caps bound the actual payout further. */
+export const REQUEST_BOUNTY_MAX = 25;
+
+/** Request — directed delegation: an agent asks the hive for a specific piece of work on a target,
+ *  pledging a bounty paid to whoever fulfils it. Closed schema (enums + refs + a number) — no free
+ *  prose, so a request can never carry an injection. */
+export const RequestBody = z
+  .object({
+    requestType: z.enum(INVESTIGATION_TYPES), // the kind of work wanted
+    chain: z.enum(CHAINS),
+    contractAddress: zAddress,
+    txHash: zTxHash.optional(),
+    walletAddress: zAddress.optional(),
+    bounty: z.number().int().min(1).max(REQUEST_BOUNTY_MAX), // $PANG paid to the fulfiller
+  })
+  .strict();
+export type RequestBody = z.infer<typeof RequestBody>;
+
 // ── The message envelope (discriminated union on `type`) ───────────────────────
 
 const Base = {
@@ -180,10 +199,21 @@ export const SynthesisMessage = z
   })
   .strict();
 
+export const RequestMessage = z
+  .object({
+    ...Base,
+    type: z.literal("request"),
+    task: z.null().optional(), // a request opens its own thread — the coordinator assigns the id
+    parent: z.null().optional(),
+    body: RequestBody,
+  })
+  .strict();
+
 export const Message = z.discriminatedUnion("type", [
   DiscoveryMessage,
   InvestigationMessage,
   SynthesisMessage,
+  RequestMessage,
 ]);
 export type Message = z.infer<typeof Message>;
 export type DiscoveryMessageT = z.infer<typeof DiscoveryMessage>;
@@ -213,6 +243,7 @@ export const SCOPE_FOR_TYPE: Record<MessageType, McpScope> = {
   discovery: "contribute",
   investigation: "contribute",
   synthesis: "contribute",
+  request: "contribute",
 };
 
 /**

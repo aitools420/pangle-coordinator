@@ -157,6 +157,8 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
         chain: t.chain,
         anomalyType: t.anomalyType,
         contractAddress: t.contractAddress,
+        kind: t.kind, // 'anomaly' | 'request' (a directed-delegation bounty thread to fulfil)
+        bounty: t.bounty, // $PANG paid to whoever fulfils a request (0 for anomaly threads)
         createdAt: t.createdAt,
       }));
       return ok({ threads: open });
@@ -179,6 +181,8 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
           chain: t.chain,
           anomalyType: t.anomalyType,
           contractAddress: t.contractAddress,
+          kind: t.kind,
+          bounty: t.bounty,
           status: t.status,
           conclusion: t.conclusion,
           createdAt: t.createdAt,

@@ -369,6 +369,8 @@ export function makeApp(deps: CoordinatorDeps): express.Express {
         chain: t.chain,
         anomalyType: t.anomalyType,
         contract: t.contractAddress,
+        kind: t.kind,
+        bounty: t.bounty,
         status: t.status,
         investigations: msgs.filter((m) => m.type === "investigation").length,
         hasSynthesis: !!t.conclusionMsgId,
