@@ -86,14 +86,31 @@ const LANDING_HTML = `<!DOCTYPE html>
 const RL_CAPACITY = 30;
 const RL_WINDOW_MS = 10_000;
 const RL_REFILL_PER_MS = RL_CAPACITY / RL_WINDOW_MS;
+// Global ceiling across ALL clients: a many-IP farm must not overwhelm the single hub by getting a
+// fresh per-IP bucket from each address. ~300 req / 10s total (10x the per-IP cap) — env-tunable.
+const RL_GLOBAL_CAPACITY = Number(process.env.RL_GLOBAL_CAPACITY ?? 300);
+const RL_GLOBAL_REFILL_PER_MS = RL_GLOBAL_CAPACITY / RL_WINDOW_MS;
 
 interface Bucket {
   tokens: number;
   last: number;
 }
 
+/** Drain one token from a refilling bucket; false when empty. */
+function takeToken(b: Bucket, capacity: number, refillPerMs: number, now: number): boolean {
+  const elapsed = now - b.last;
+  b.last = now;
+  b.tokens = Math.min(capacity, b.tokens + elapsed * refillPerMs);
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
+}
+
 function makeRateLimiter() {
   const buckets = new Map<string, Bucket>();
+  // Global bucket: the total request ceiling across EVERY client. Without it, the per-IP limiter
+  // lets a many-IP farm get a fresh bucket per address and collectively flood the single hub.
+  const global: Bucket = { tokens: RL_GLOBAL_CAPACITY, last: Date.now() };
   return function allow(key: string): boolean {
     const now = Date.now();
     // Evict buckets idle longer than the window so the map can't grow unbounded under a flood of
@@ -108,11 +125,10 @@ function makeRateLimiter() {
       b = { tokens: RL_CAPACITY, last: now };
       buckets.set(key, b);
     }
-    const elapsed = now - b.last;
-    b.last = now;
-    b.tokens = Math.min(RL_CAPACITY, b.tokens + elapsed * RL_REFILL_PER_MS);
-    if (b.tokens < 1) return false;
-    b.tokens -= 1;
+    // Per-key first (the common legit path; one abuser is capped at RL_CAPACITY and so can never
+    // drain the global budget alone), then the global ceiling (caps total throughput across all IPs).
+    if (!takeToken(b, RL_CAPACITY, RL_REFILL_PER_MS, now)) return false;
+    if (!takeToken(global, RL_GLOBAL_CAPACITY, RL_GLOBAL_REFILL_PER_MS, now)) return false;
     return true;
   };
 }

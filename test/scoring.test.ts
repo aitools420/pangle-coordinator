@@ -184,6 +184,75 @@ test("synthesis reward goes to the FIRST synthesizer; a late copycat cannot stea
   }
 });
 
+test("auto-resolver: complete-verified-work resolves correct (mints synthesis); no credited investigation resolves incorrect", async () => {
+  const dbPath = tmpDbPath();
+  const db = new Db(dbPath);
+  const mock = new MockChain();
+  const cfg: Config = { ...config, evidenceRpcs: {}, resolverBatch: 10 };
+  const intel = new Intelligence(db, cfg);
+  const scoring = new Scoring(db, mock, cfg);
+
+  db.upsertAgent({ agentId: A_ID, owner: A_OWNER, agentWallet: A_WALLET });
+  db.upsertAgent({ agentId: B_ID, owner: B_WALLET, agentWallet: B_WALLET });
+  mock.registerMock(A_ID, A_OWNER, A_WALLET);
+  mock.registerMock(B_ID, B_WALLET, B_WALLET);
+
+  // Force a thread's resolution window to have elapsed (createdAt+window is otherwise ~48h out).
+  const forceDue = (threadId: string) => db.raw.prepare("UPDATE threads SET targetResolveAt = 0 WHERE id = ?").run(threadId);
+
+  try {
+    // Thread 1 — complete: discovery(A) + a REWARDED investigation(B) + synthesis(A).
+    const d1 = intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "discovery",
+      body: { chain: "PulseChain", anomalyType: "Liquidity Removal", contractAddress: CONTRACT, txHash: TX, timestamp: 1_700_000_000 },
+    } as Message);
+    assert.equal(d1.ok, true); if (!d1.ok) return;
+    const inv1 = intel.submit(B_ID, B_WALLET, {
+      v: "0", nonce: randomUUID(), from: B_WALLET, type: "investigation", task: d1.threadId,
+      body: { investigationType: "Liquidity Impact Analysis", evidence: "LP pulled, no relock — substantial evidence." },
+    } as Message);
+    assert.equal(inv1.ok, true); if (!inv1.ok) return;
+    assert.equal((await scoring.scoreMessage(inv1.messageId, true)).ok, true); // credit the investigation
+    assert.equal(intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "synthesis", task: d1.threadId,
+      body: { conclusion: "High Risk", rationale: "rug" },
+    } as Message).ok, true);
+    forceDue(d1.threadId);
+
+    // Thread 2 — no credited investigation: discovery(A) + synthesis(A) only.
+    const d2 = intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "discovery",
+      body: { chain: "PulseChain", anomalyType: "Liquidity Removal", contractAddress: CONTRACT, txHash: "0x" + "cd".repeat(32), timestamp: 1_700_000_500 },
+    } as Message);
+    assert.equal(d2.ok, true); if (!d2.ok) return;
+    assert.equal(intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "synthesis", task: d2.threadId,
+      body: { conclusion: "Benign Activity" },
+    } as Message).ok, true);
+    forceDue(d2.threadId);
+
+    const balBefore = await mock.tokenBalanceOf(A_WALLET); // 0 — nothing minted to A yet
+    const res = await scoring.autoResolveDue();
+    assert.equal(res.resolved, 2, "both due threads resolved");
+
+    // Thread 1 → correct: synthesizer A earns +20; thread marked resolved/correct.
+    assert.equal(await mock.tokenBalanceOf(A_WALLET), balBefore + 20n * PANG, "complete thread pays the 20 synthesis");
+    assert.equal(db.getThread(d1.threadId)!.status, "resolved");
+    assert.equal(db.getThread(d1.threadId)!.resolvedCorrect, 1);
+    // Thread 2 → incorrect: no synthesis mint; thread marked unresolved.
+    assert.equal(db.getThread(d2.threadId)!.status, "unresolved");
+    assert.equal(db.getThread(d2.threadId)!.resolvedCorrect, 0);
+
+    // Idempotent: nothing left due, no double-mint on a re-run.
+    const res2 = await scoring.autoResolveDue();
+    assert.equal(res2.considered, 0, "no threads left due after resolution");
+    assert.equal(await mock.tokenBalanceOf(A_WALLET), balBefore + 20n * PANG, "no re-mint on re-run");
+  } finally {
+    db.close();
+    cleanup(dbPath);
+  }
+});
+
 test("per-agent mint cap: one agent's daily issuance is capped; a different agent under cap still mints", async () => {
   const dbPath = tmpDbPath();
   const db = new Db(dbPath);

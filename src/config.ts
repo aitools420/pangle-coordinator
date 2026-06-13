@@ -81,6 +81,16 @@ export const config = {
   // stake-to-join or proof-of-uniqueness barrier. See /design "Sybil posture".
   // Automated on-chain evidence verification: read-only RPC per chain. Empty = verifier no-ops.
   evidenceRpcs: parseEvidenceRpcs(),
+
+  // Synthesis auto-resolver (full-auto payout). When on, the coordinator automatically resolves
+  // synthesis threads whose window has elapsed: a synthesis is judged CORRECT when its thread has
+  // verifiable evidence AND >=1 rewarded ("useful", first-unique) investigation — i.e. it rests on
+  // real, credited work ("complete-verified-work", domain-agnostic) — otherwise it resolves
+  // incorrect. resolveSynthesis still applies the evidence gate + mint caps + idempotency on top.
+  // AUTO_RESOLVE=false falls back to manual /resolve only.
+  autoResolveEnabled: (process.env.AUTO_RESOLVE ?? "true") !== "false",
+  resolverTickMs: Number(process.env.RESOLVER_TICK_MS ?? 60_000),
+  resolverBatch: Number(process.env.RESOLVER_BATCH ?? 10),
 } as const;
 
 // Refuse the well-known public anvil dev key on a real chain — it must never own a mainnet coordinator.

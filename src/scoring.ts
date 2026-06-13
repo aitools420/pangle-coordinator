@@ -213,6 +213,50 @@ export class Scoring {
   }
 
   /**
+   * Full-auto synthesis resolution. For each OPEN thread whose synthesis window has elapsed, decide
+   * correctness automatically and resolve it — minting the synthesis reward when correct via
+   * resolveSynthesis (which re-applies the evidence gate, mint caps, and idempotency).
+   *
+   * v1 correctness is "complete-verified-work" and is deliberately domain-agnostic (not rug- or
+   * conclusion-specific): a synthesis is CORRECT when (a) the thread's cited evidence does not
+   * VERIFIABLY fail, AND (b) the thread has >=1 rewarded (useful, first-unique) investigation — i.e.
+   * the conclusion rests on real, credited work. A verifiably-false discovery, or a thread with no
+   * credited investigation, resolves INCORRECT (no synthesis mint). This pays thoroughness of
+   * verified work rather than proven prediction accuracy — acceptable while $PANG is valueless, and
+   * a richer per-conclusion on-chain outcome oracle can layer on top later. A mint-cap trip leaves a
+   * thread OPEN (resolveSynthesis returns !ok) so it is retried on a later tick.
+   */
+  async autoResolveDue(limit = this.cfg.resolverBatch): Promise<{ resolved: number; considered: number }> {
+    const due = this.db.listResolvableThreads(nowSeconds()).slice(0, Math.max(1, limit));
+    let resolved = 0;
+    for (const thread of due) {
+      let evOk: boolean | null = null;
+      try {
+        const ev = await verifyEvidence(this.cfg, { chain: thread.chain, anomalyType: thread.anomalyType, contractAddress: thread.contractAddress, txHash: thread.txHash, walletAddress: thread.walletAddress });
+        evOk = ev.ok;
+      } catch {
+        evOk = null; // unverifiable (RPC error) — do not block; fall through to the work check
+      }
+      let correct: boolean;
+      let source: string;
+      if (evOk === false) {
+        correct = false;
+        source = "evidence-false";
+      } else {
+        const hasCreditedInvestigation = this.db
+          .listThreadMessages(thread.id)
+          .some((m) => m.type === "investigation" && this.db.hasRewardForMessage(m.id));
+        correct = hasCreditedInvestigation;
+        source = hasCreditedInvestigation ? "complete-verified-work" : "no-credited-investigation";
+      }
+      const r = await this.resolveSynthesis(thread.id, correct);
+      this.db.audit("coordinator", "synthesis-auto-resolve", { threadId: thread.id, correct, source, ok: r.ok, error: r.ok ? undefined : (r as { error: string }).error });
+      if (r.ok) resolved++;
+    }
+    return { resolved, considered: due.length };
+  }
+
+  /**
    * Reputation = cumulative $PANG earned (whole tokens), summed from the agent's reward rows.
    * An earnings record — unaffected by token transfers. Written to the db mirror (read by the
    * /agent + coordinator_talk{standing} endpoints). No separate on-chain reputation contract.

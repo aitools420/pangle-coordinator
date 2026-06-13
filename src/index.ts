@@ -30,8 +30,23 @@ const server = app.listen(config.port, "127.0.0.1", () => {
   });
 });
 
+// Full-auto synthesis resolver: on a timer, auto-resolve due synthesis threads (mints on correct
+// via scoring.resolveSynthesis). Batch-capped per tick to bound RPC/load on the single hub.
+let resolverTimer: ReturnType<typeof setInterval> | undefined;
+if (config.autoResolveEnabled) {
+  resolverTimer = setInterval(() => {
+    scoring
+      .autoResolveDue()
+      .then((r) => { if (r.resolved > 0) log.info("auto-resolved synthesis threads", r); })
+      .catch((e) => log.error("auto-resolve tick failed", { error: String(e) }));
+  }, config.resolverTickMs);
+  resolverTimer.unref();
+  log.info("synthesis auto-resolver on", { tickMs: config.resolverTickMs, batch: config.resolverBatch });
+}
+
 function shutdown(sig: string): void {
   log.warn("shutting down", { sig });
+  if (resolverTimer) clearInterval(resolverTimer);
   server.close(() => {
     db.close();
     process.exit(0);
