@@ -294,6 +294,41 @@ test("directed delegation: a fulfilling investigation earns the normal reward + 
   }
 });
 
+test("agent suggestions: an accepted improvement proposal mints the 100 $PANG acceptance reward", async () => {
+  const dbPath = tmpDbPath();
+  const db = new Db(dbPath);
+  const mock = new MockChain();
+  const cfg: Config = { ...config, evidenceRpcs: {} };
+  const intel = new Intelligence(db, cfg);
+  const scoring = new Scoring(db, mock, cfg);
+
+  db.upsertAgent({ agentId: A_ID, owner: A_OWNER, agentWallet: A_WALLET });
+
+  try {
+    const s = intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "suggestion",
+      body: { area: "scoring", proposal: "Weight the synthesis reward by the agent's verified track record." },
+    } as Message);
+    assert.equal(s.ok, true); if (!s.ok) return;
+    const sId = s.messageId;
+    assert.equal(db.getSuggestion(sId)!.status, "pending");
+    assert.equal(await mock.tokenBalanceOf(A_WALLET), 0n);
+
+    // Operator accepts → 100 $PANG minted via the same reward mechanism; status -> accepted.
+    assert.equal((await scoring.awardSuggestion(sId)).ok, true);
+    assert.equal(await mock.tokenBalanceOf(A_WALLET), 100n * PANG, "accepted suggestion mints 100 $PANG");
+    assert.equal(db.getSuggestion(sId)!.status, "accepted");
+    assert.equal(db.getAgent(A_ID)!.reputation, 100);
+
+    // Idempotent: a second accept does not re-mint.
+    assert.equal((await scoring.awardSuggestion(sId)).ok, false);
+    assert.equal(await mock.tokenBalanceOf(A_WALLET), 100n * PANG, "no double-mint on re-accept");
+  } finally {
+    db.close();
+    cleanup(dbPath);
+  }
+});
+
 test("per-agent mint cap: one agent's daily issuance is capped; a different agent under cap still mints", async () => {
   const dbPath = tmpDbPath();
   const db = new Db(dbPath);

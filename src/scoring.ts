@@ -19,6 +19,7 @@ import type { Db, MessageRow } from "./db.js";
 import type { ChainAdapter } from "./chain.js";
 import type { Config } from "./config.js";
 import { verifyEvidence } from "./evidence.js";
+import { REWARD_SUGGESTION_ACCEPTED } from "./schema.js";
 
 /** Per-type reward amounts in token base units (18 decimals). Only the FIRST unique useful
  *  submission per slot is paid; repeats earn 0. */
@@ -270,6 +271,43 @@ export class Scoring {
       if (r.ok) resolved++;
     }
     return { resolved, considered: due.length };
+  }
+
+  /**
+   * Award an ACCEPTED improvement suggestion: mint the (high) acceptance reward to the suggester via
+   * the same mint mechanism, then mark it accepted. Human-gated — called only from the admin endpoint.
+   * Idempotent (a non-pending suggestion is left untouched); cap-checked.
+   */
+  async awardSuggestion(suggestionId: string): Promise<ScoringResult> {
+    const s = this.db.getSuggestion(suggestionId);
+    if (!s) return { ok: false, error: "suggestion not found" };
+    if (s.status !== "pending") return { ok: false, error: "suggestion already reviewed" };
+    const agent = this.db.getAgent(s.agentId);
+    if (!agent) return { ok: false, error: "suggester agent not found" };
+    let to;
+    try {
+      to = getAddress(agent.agentWallet);
+    } catch {
+      return { ok: false, error: "invalid suggester wallet address" };
+    }
+    const amount = BigInt(REWARD_SUGGESTION_ACCEPTED) * 10n ** 18n;
+    if (!this.mintAllowed(amount, s.agentId)) {
+      this.db.audit("coordinator", "mint-cap-tripped", { suggestionId, type: "suggestion" });
+      return { ok: false, error: "daily mint-rate cap reached — retry after the 24h window resets" };
+    }
+    const txHash = await this.chain.mintReward(to, amount);
+    this.db.addReward({ agentId: s.agentId, threadId: suggestionId, messageId: suggestionId, amount: amount.toString(), reason: "suggestion accepted", txHash });
+    this.db.setSuggestionReviewed(suggestionId, "accepted", nowSeconds(), txHash);
+    await this.recomputeReputation(s.agentId);
+    return { ok: true };
+  }
+  /** Reject a pending suggestion (no mint). Human-gated. */
+  rejectSuggestion(suggestionId: string): ScoringResult {
+    const s = this.db.getSuggestion(suggestionId);
+    if (!s) return { ok: false, error: "suggestion not found" };
+    if (s.status !== "pending") return { ok: false, error: "suggestion already reviewed" };
+    this.db.setSuggestionReviewed(suggestionId, "rejected", nowSeconds());
+    return { ok: true };
   }
 
   /**

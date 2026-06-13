@@ -386,7 +386,7 @@ export function makeApp(deps: CoordinatorDeps): express.Express {
     });
     res.json({
       now,
-      stats: { agents: db.listAgents().length, openThreads: intel.listOpenThreads().length, totalThreads: all.length, resolved: all.filter((t) => t.status !== "open").length },
+      stats: { agents: db.listAgents().length, openThreads: intel.listOpenThreads().length, totalThreads: all.length, resolved: all.filter((t) => t.status !== "open").length, suggestions: db.suggestionCounts() },
       threads,
       activity,
     });
@@ -579,6 +579,29 @@ export function makeApp(deps: CoordinatorDeps): express.Express {
       res.json({ ok: true });
     } catch (e) {
       log.error("admin resolve failed", { err: (e as Error).message });
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // review (accept/reject) an agent improvement suggestion — accept mints the acceptance reward
+  adminApi.get("/suggestions", (_req, res) => {
+    res.json({ suggestions: db.listSuggestions(), counts: db.suggestionCounts() });
+  });
+  adminApi.post("/suggestions/review", async (req, res) => {
+    const body = req.body ?? {};
+    const id = typeof body.id === "string" ? body.id : "";
+    const accept = body.accept === true;
+    if (!id || typeof body.accept !== "boolean") {
+      res.status(400).json({ error: "id and boolean accept are required" });
+      return;
+    }
+    try {
+      const result = accept ? await scoring.awardSuggestion(id) : scoring.rejectSuggestion(id);
+      if (!result.ok) { res.status(400).json({ error: result.error }); return; }
+      db.audit("admin", "suggestion.review", { id, accept });
+      res.json({ ok: true });
+    } catch (e) {
+      log.error("admin suggestion review failed", { err: (e as Error).message });
       res.status(400).json({ error: (e as Error).message });
     }
   });

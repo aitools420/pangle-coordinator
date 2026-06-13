@@ -69,6 +69,19 @@ export interface RewardRow {
   createdAt: number;
 }
 
+export type SuggestionStatus = "pending" | "accepted" | "rejected";
+export interface SuggestionRow {
+  id: string;
+  agentId: string;
+  fromAddress: string;
+  area: string;
+  proposal: string; // free text — human-reviewed only, never executed
+  status: SuggestionStatus;
+  createdAt: number;
+  reviewedAt: number | null;
+  rewardTxHash: string | null;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   agentId TEXT PRIMARY KEY,
@@ -147,6 +160,19 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS suggestions (
+  id TEXT PRIMARY KEY,
+  agentId TEXT NOT NULL,
+  fromAddress TEXT NOT NULL,
+  area TEXT NOT NULL,
+  proposal TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  createdAt INTEGER NOT NULL,
+  reviewedAt INTEGER,
+  rewardTxHash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);
 `;
 
 export class Db {
@@ -353,6 +379,29 @@ export class Db {
       try { t += BigInt(r.amount); } catch { /* skip malformed */ }
     }
     return t;
+  }
+
+  // ── suggestions (agent improvement proposals — human-in-the-loop) ────────────
+  addSuggestion(s: Omit<SuggestionRow, "status" | "reviewedAt" | "rewardTxHash">): void {
+    this.raw
+      .prepare(`INSERT INTO suggestions (id, agentId, fromAddress, area, proposal, status, createdAt) VALUES (@id, @agentId, @fromAddress, @area, @proposal, 'pending', @createdAt)`)
+      .run(s);
+  }
+  getSuggestion(id: string): SuggestionRow | undefined {
+    return this.raw.prepare(`SELECT * FROM suggestions WHERE id = ?`).get(id) as SuggestionRow | undefined;
+  }
+  listSuggestions(status?: SuggestionStatus): SuggestionRow[] {
+    if (status) return this.raw.prepare(`SELECT * FROM suggestions WHERE status = ? ORDER BY createdAt DESC`).all(status) as SuggestionRow[];
+    return this.raw.prepare(`SELECT * FROM suggestions ORDER BY createdAt DESC`).all() as SuggestionRow[];
+  }
+  setSuggestionReviewed(id: string, status: SuggestionStatus, reviewedAt: number, rewardTxHash?: string | null): void {
+    this.raw.prepare(`UPDATE suggestions SET status = ?, reviewedAt = ?, rewardTxHash = ? WHERE id = ?`).run(status, reviewedAt, rewardTxHash ?? null, id);
+  }
+  suggestionCounts(): { pending: number; accepted: number; rejected: number } {
+    const rows = this.raw.prepare(`SELECT status, COUNT(*) n FROM suggestions GROUP BY status`).all() as { status: string; n: number }[];
+    const c = { pending: 0, accepted: 0, rejected: 0 };
+    for (const r of rows) if (r.status in c) (c as Record<string, number>)[r.status] = r.n;
+    return c;
   }
 
   close(): void {

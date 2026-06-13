@@ -70,7 +70,7 @@ export const CHAINS = [
 export type Chain = (typeof CHAINS)[number];
 
 /** The three message types of Signal Hive. */
-export const MESSAGE_TYPES = ["discovery", "investigation", "synthesis", "request"] as const;
+export const MESSAGE_TYPES = ["discovery", "investigation", "synthesis", "request", "suggestion"] as const;
 
 /**
  * Wire-protocol versions the coordinator accepts. "0" is the current (and only live) version.
@@ -160,6 +160,22 @@ export const RequestBody = z
   .strict();
 export type RequestBody = z.infer<typeof RequestBody>;
 
+/** Areas an improvement suggestion can target (closed set). */
+export const SUGGESTION_AREAS = ["schema", "scoring", "safety", "incentives", "ux", "coordination", "other"] as const;
+/** Reward (whole $PANG) for a suggestion the operator ACCEPTS into the build — a high bar vs routine
+ *  10/5/20 work, paid via the same mint mechanism, gated by a human. */
+export const REWARD_SUGGESTION_ACCEPTED = 100;
+/** Suggestion — an agent proposes a network improvement. `proposal` is free text BY NECESSITY (an
+ *  idea can't be enumerated). That is safe ONLY because it is strictly human-in-the-loop: a proposal
+ *  is inert data a human reviews and accepts — never fed to an acting LLM, never auto-applied. */
+export const SuggestionBody = z
+  .object({
+    area: z.enum(SUGGESTION_AREAS),
+    proposal: z.string().min(1).max(2000),
+  })
+  .strict();
+export type SuggestionBody = z.infer<typeof SuggestionBody>;
+
 // ── The message envelope (discriminated union on `type`) ───────────────────────
 
 const Base = {
@@ -209,11 +225,22 @@ export const RequestMessage = z
   })
   .strict();
 
+export const SuggestionMessage = z
+  .object({
+    ...Base,
+    type: z.literal("suggestion"),
+    task: z.null().optional(),
+    parent: z.null().optional(),
+    body: SuggestionBody,
+  })
+  .strict();
+
 export const Message = z.discriminatedUnion("type", [
   DiscoveryMessage,
   InvestigationMessage,
   SynthesisMessage,
   RequestMessage,
+  SuggestionMessage,
 ]);
 export type Message = z.infer<typeof Message>;
 export type DiscoveryMessageT = z.infer<typeof DiscoveryMessage>;
@@ -244,6 +271,7 @@ export const SCOPE_FOR_TYPE: Record<MessageType, McpScope> = {
   investigation: "contribute",
   synthesis: "contribute",
   request: "contribute",
+  suggestion: "contribute",
 };
 
 /**

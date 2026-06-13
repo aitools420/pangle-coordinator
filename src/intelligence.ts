@@ -149,6 +149,21 @@ export class Intelligence {
       return { ok: true, threadId: tId, messageId: mId };
     }
 
+    if (message.type === "suggestion") {
+      // Agent improvement proposal — stored for HUMAN review (never auto-applied, never fed to an
+      // acting LLM). An accepted suggestion is rewarded via the admin endpoint (see coordinator.ts).
+      const sId = "sug_" + randomBytes(16).toString("hex");
+      this.db.addSuggestion({
+        id: sId,
+        agentId,
+        fromAddress: address,
+        area: message.body.area,
+        proposal: message.body.proposal,
+        createdAt: now,
+      });
+      return { ok: true, threadId: sId, messageId: sId };
+    }
+
     // investigation | synthesis — reply to an existing OPEN thread.
     const tId = message.task;
     const thread = this.db.getThread(tId);
