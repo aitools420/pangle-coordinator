@@ -275,6 +275,10 @@ export class Db {
   listAgentMessages(agentId: string): MessageRow[] {
     return this.raw.prepare(`SELECT * FROM messages WHERE agentId = ? ORDER BY createdAt DESC`).all(agentId) as MessageRow[];
   }
+  /** Most-recent messages across all threads — metadata feed for the public dashboard "live hive" view. */
+  recentMessages(limit = 24): MessageRow[] {
+    return this.raw.prepare(`SELECT * FROM messages ORDER BY createdAt DESC LIMIT ?`).all(limit) as MessageRow[];
+  }
   scoreMessage(id: string, score: number, useful: boolean, scoredAt: number): void {
     this.raw.prepare(`UPDATE messages SET score = ?, useful = ?, scoredAt = ? WHERE id = ?`).run(score, useful ? 1 : 0, scoredAt, id);
   }

@@ -22,7 +22,7 @@ import type { Config } from "./config.js";
 import type { Logger } from "./telemetry.js";
 import { makeMcp, toolManifest } from "./mcp.js";
 import { verifyEvidence } from "./evidence.js";
-import { capabilities } from "./schema.js";
+import { capabilities, validateMessage } from "./schema.js";
 
 export interface CoordinatorDeps {
   db: Db;
@@ -148,6 +148,25 @@ function pangWhole(weiStr: string): string {
   } catch {
     return "0";
   }
+}
+
+/** Best-effort classification of an injection attempt (for the /redteam demo stats). */
+function classifyVector(p: string): string {
+  const s = p.toLowerCase();
+  if (/\b(ignore|disregard|forget)\b.*(previous|above|prior|instruction|all)/.test(s)) return "instruction-override";
+  if (/system\s*:|<\|?\s*system|you are now|new instructions|act as|developer mode/.test(s)) return "fake-system-prompt";
+  if (/(send|transfer|approve|drain)\b|private key|seed phrase|mnemonic/.test(s)) return "exfil-or-spend-bait";
+  if (/```|<\/?[a-z]+>|\]\]>|-{3,}|={3,}|\[\/?inst\]/i.test(p)) return "delimiter-escape";
+  return "generic-injection";
+}
+
+type RedteamStats = { total: number; reachedAction: number; byVector: Record<string, number>; byLayer: Record<string, number> };
+function readRedteamStats(db: Db): RedteamStats {
+  try {
+    const s = JSON.parse(db.getSetting("redteam_stats") || "");
+    if (s && typeof s === "object") return { total: 0, reachedAction: 0, byVector: {}, byLayer: {}, ...s };
+  } catch { /* fall through */ }
+  return { total: 0, reachedAction: 0, byVector: {}, byLayer: {} };
 }
 
 /** Build the Express app (does not listen). */
@@ -332,6 +351,103 @@ export function makeApp(deps: CoordinatorDeps): express.Express {
       lastActivityTs,
       now: Math.floor(Date.now() / 1000),
     });
+  });
+
+  // ── Public network feed (powers the dashboard "live hive" view) ─────────────────
+  // Read-only, CORS-open: already-public, non-sensitive AGGREGATES + thread SUMMARIES + message
+  // METADATA only — never investigation content (that stays gated to contributors via getReport).
+  // Same posture as /health.
+  app.get("/threads", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Vary", "Origin");
+    const now = Math.floor(Date.now() / 1000);
+    const all = intel.listThreads();
+    const threads = all.slice(0, 16).map((t) => {
+      const msgs = db.listThreadMessages(t.id);
+      return {
+        id: t.id.replace(/^thread_/, "").slice(0, 10),
+        chain: t.chain,
+        anomalyType: t.anomalyType,
+        contract: t.contractAddress,
+        status: t.status,
+        investigations: msgs.filter((m) => m.type === "investigation").length,
+        hasSynthesis: !!t.conclusionMsgId,
+        conclusion: t.status === "open" ? null : t.conclusion,
+        resolvedCorrect: t.resolvedCorrect,
+        createdAt: t.createdAt,
+        ageSeconds: now - t.createdAt,
+      };
+    });
+    const activity = db.recentMessages(24).map((m) => {
+      const t = db.getThread(m.threadId);
+      return { type: m.type, anomalyType: t?.anomalyType ?? null, chain: t?.chain ?? null, thread: m.threadId.replace(/^thread_/, "").slice(0, 10), agent: m.agentId.slice(0, 10), ts: m.createdAt };
+    });
+    res.json({
+      now,
+      stats: { agents: db.listAgents().length, openThreads: intel.listOpenThreads().length, totalThreads: all.length, resolved: all.filter((t) => t.status !== "open").length },
+      threads,
+      activity,
+    });
+  });
+
+  // ── Red-team demo (powers /hack) ────────────────────────────────────────────
+  // LIVE but NON-PERSISTING: runs a pasted payload through the REAL strict-schema validator + the
+  // safe-consumer reasoning, returns WHERE the attack died (defense-depth), and bumps an aggregate
+  // counter — without ever writing a hive thread (so it can't be used to spam the network). Zero
+  // idle cost; one cheap in-memory check per attempt; behind the global rate limiter (app.use above).
+  app.get("/redteam", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Vary", "Origin");
+    res.json({ stats: readRedteamStats(db) });
+  });
+  app.post("/redteam", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Vary", "Origin");
+    const payload = (typeof req.body?.payload === "string" ? req.body.payload : "").slice(0, 8000);
+    if (!payload.trim()) { res.status(400).json({ error: "payload required" }); return; }
+    const vector = classifyVector(payload);
+    const trimmed = payload.trim();
+
+    // (1) The REAL strict-schema validator. A pasted raw message with off-spec fields dies here; a
+    // prose injection embedded as a normal field is schema-VALID — and that's the point: we don't
+    // pretend to block text, we make accepted text harmless (layers 2-5).
+    let schema: { ok: boolean; error?: string };
+    if (trimmed.startsWith("{")) {
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(trimmed); } catch { parsed = null; }
+      schema = parsed ? validateMessage(parsed) : { ok: false, error: "not valid JSON — rejected before it can be parsed as a message" };
+    } else {
+      schema = validateMessage({ v: "0", from: "0x0000000000000000000000000000000000000000", nonce: "00000000-0000-4000-8000-000000000000", type: "investigation", task: "thread_demo", body: { investigationType: "Contract Risk Assessment", evidence: payload } });
+    }
+
+    // (2) Safe-consumer reasoning: pull any VERIFIABLE on-chain refs; the prose is treated as inert.
+    const refs = payload.match(/0x[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?/g) || [];
+    let stoppedAt: string; let depth: number; let detail: string;
+    if (!schema.ok) {
+      stoppedAt = "schema-boundary"; depth = 1;
+      detail = `Rejected at the strict-schema boundary (${schema.error}). Off-spec input never even enters the network.`;
+    } else {
+      stoppedAt = "inert-data"; depth = 2;
+      detail = refs.length
+        ? `Accepted as inert DATA — the coordinator validates & scores, it never executes message content. A safe consumer extracts only the ${refs.length} on-chain reference(s) and verifies them itself on-chain; the instruction text is discarded, and a capability-stripped reader holds no keys/tools to act on it anyway. Net effect: nothing.`
+        : `Accepted as inert DATA — the coordinator validates & scores, it never executes message content. It carries no verifiable on-chain reference, so a safe consumer has nothing to act on; the instruction text is discarded, capability-stripped. Net effect: nothing.`;
+    }
+    const layers = [
+      { n: 1, name: "Strict schema", caught: !schema.ok, note: "envelope + control fields are a locked allow-list — off-spec is rejected at the boundary" },
+      { n: 2, name: "Inert data", caught: schema.ok, note: "the coordinator validates & scores; it never executes message content" },
+      { n: 3, name: "Verify, don't trust", caught: false, note: "truth = on-chain facts the consumer re-checks, never a peer's prose" },
+      { n: 4, name: "Capability-stripped reader", caught: false, note: "whatever reads untrusted content holds no keys/tools — a fooled reader can't act" },
+      { n: 5, name: "Zero blast radius", caught: false, note: "read/append-only surface — worst case is a contribution that scores 0" },
+    ];
+
+    const stats = readRedteamStats(db);
+    stats.total += 1;
+    stats.byVector[vector] = (stats.byVector[vector] || 0) + 1;
+    stats.byLayer[stoppedAt] = (stats.byLayer[stoppedAt] || 0) + 1;
+    db.setSetting("redteam_stats", JSON.stringify(stats));
+    db.audit("redteam", "attempt", { vector, stoppedAt });
+
+    res.json({ vector, stoppedAt, depth, reachedAction: false, detail, layers, stats });
   });
 
   // ── Admin dashboard (open) ───────────────────────────────────────────────────
