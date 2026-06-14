@@ -213,6 +213,14 @@ export class Auth {
       this.db.audit("auth", "agent.self-register", { agentId, address: recovered });
       agent = this.db.getAgentByWallet(recovered);
     }
+    // A self-disconnected ("inactive") agent reactivates simply by signing in again — its
+    // reputation + earned rewards persist. Quarantine (operator moderation) is NOT reversible
+    // this way: it stays rejected below.
+    if (agent && agent.status === "inactive") {
+      this.db.setAgentStatus(agent.agentId, "active");
+      this.db.audit("auth", "agent.reactivate", { agentId: agent.agentId, address: recovered });
+      agent = this.db.getAgentByWallet(recovered);
+    }
     if (!agent || agent.status !== "active") {
       return { ok: false, error: "agent is not active" };
     }

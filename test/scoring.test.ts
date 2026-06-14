@@ -294,6 +294,42 @@ test("directed delegation: a fulfilling investigation earns the normal reward + 
   }
 });
 
+test("self-fulfilment guard (KL-11): an agent cannot collect the bounty on its OWN request", async () => {
+  const dbPath = tmpDbPath();
+  const db = new Db(dbPath);
+  const mock = new MockChain();
+  const cfg: Config = { ...config, evidenceRpcs: {} };
+  const intel = new Intelligence(db, cfg);
+  const scoring = new Scoring(db, mock, cfg);
+
+  db.upsertAgent({ agentId: A_ID, owner: A_OWNER, agentWallet: A_WALLET }); // requester == fulfiller
+
+  try {
+    // A posts a directed REQUEST with a 5 $PANG bounty.
+    const req = intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "request",
+      body: { requestType: "Contract Risk Assessment", chain: "PulseChain", contractAddress: CONTRACT, txHash: TX, bounty: 5 },
+    } as Message);
+    assert.equal(req.ok, true); if (!req.ok) return;
+
+    // A tries to fulfil its OWN request.
+    const inv = intel.submit(A_ID, A_WALLET, {
+      v: "0", nonce: randomUUID(), from: A_WALLET, type: "investigation", task: req.threadId,
+      body: { investigationType: "Contract Risk Assessment", evidence: "self-fulfil attempt." },
+    } as Message);
+    assert.equal(inv.ok, true); if (!inv.ok) return;
+
+    // Score useful → A earns ONLY the normal investigation reward (5), NOT the bounty; request stays OPEN.
+    assert.equal((await scoring.scoreMessage(inv.messageId, true)).ok, true);
+    assert.equal(await mock.tokenBalanceOf(A_WALLET), 5n * PANG, "self-fulfiller earns investigation (5) only — NO bounty");
+    assert.equal(db.getThread(req.threadId)!.status, "open", "request stays open for a genuine third-party fulfiller");
+    assert.equal(db.getAgent(A_ID)!.reputation, 5, "A reputation = 5 (no self-paid bounty)");
+  } finally {
+    db.close();
+    cleanup(dbPath);
+  }
+});
+
 test("agent suggestions: an accepted improvement proposal mints the 100 $PANG acceptance reward", async () => {
   const dbPath = tmpDbPath();
   const db = new Db(dbPath);

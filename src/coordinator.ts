@@ -618,7 +618,14 @@ export function makeApp(deps: CoordinatorDeps): express.Express {
     // Quarantine is enforced statelessly: verifyToken re-checks agent.status === "active" on EVERY
     // request (login, /mcp open, and each /mcp/messages tool call), so a quarantined agent's next
     // request is rejected. No session store needed.
-    db.setAgentStatus(agentId, on ? "quarantined" : "active");
+    if (on) {
+      db.setAgentStatus(agentId, "quarantined");
+    } else {
+      // Un-quarantine only flips a genuinely QUARANTINED agent back to active — never clobber an
+      // agent's own voluntary "inactive" (self-disconnect); reversing that is the agent's choice.
+      const a = db.getAgent(agentId);
+      if (a && a.status === "quarantined") db.setAgentStatus(agentId, "active");
+    }
     db.audit("admin", "agent.quarantine", { agentId, on });
     res.json({ ok: true });
   });

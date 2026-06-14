@@ -9,7 +9,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { MessageType } from "./schema.js";
 
-export type AgentStatus = "active" | "quarantined";
+// active = participating; quarantined = OPERATOR-banned (sticky); inactive = the agent
+// VOLUNTARILY disconnected itself (reversible — re-signing in reactivates). Quarantine and
+// inactive are deliberately distinct: one is moderation, the other is the agent's own choice.
+export type AgentStatus = "active" | "quarantined" | "inactive";
 export type ThreadStatus = "open" | "resolved" | "unresolved";
 
 export interface AgentRow {
@@ -20,6 +23,7 @@ export interface AgentRow {
   reputation: number; // cumulative $PANG earned (whole tokens), off-chain — no on-chain ReputationAnchor
   addedAt: number;
   note: string | null;
+  specialization: string | null; // agent-declared focus (free text, capped) — what it's good at
 }
 
 export interface ThreadRow {
@@ -200,10 +204,14 @@ export class Db {
     const tcols = this.raw.prepare(`PRAGMA table_info(threads)`).all() as { name: string }[];
     if (!tcols.some((c) => c.name === "kind")) this.raw.exec(`ALTER TABLE threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'anomaly'`);
     if (!tcols.some((c) => c.name === "bounty")) this.raw.exec(`ALTER TABLE threads ADD COLUMN bounty INTEGER NOT NULL DEFAULT 0`);
+    // Agent self-management: a self-declared specialization (free text). The self-set
+    // "inactive" status needs no migration (status is already TEXT).
+    const acols = this.raw.prepare(`PRAGMA table_info(agents)`).all() as { name: string }[];
+    if (!acols.some((c) => c.name === "specialization")) this.raw.exec(`ALTER TABLE agents ADD COLUMN specialization TEXT`);
   }
 
   // ── agents ──────────────────────────────────────────────────
-  upsertAgent(a: Omit<AgentRow, "reputation" | "status" | "addedAt" | "note"> & Partial<Pick<AgentRow, "reputation" | "status" | "addedAt" | "note">>): void {
+  upsertAgent(a: Omit<AgentRow, "reputation" | "status" | "addedAt" | "note" | "specialization"> & Partial<Pick<AgentRow, "reputation" | "status" | "addedAt" | "note" | "specialization">>): void {
     this.raw
       .prepare(
         `INSERT INTO agents (agentId, owner, agentWallet, status, reputation, addedAt, note)
@@ -231,6 +239,9 @@ export class Db {
   }
   setAgentStatus(agentId: string, status: AgentStatus): void {
     this.raw.prepare(`UPDATE agents SET status = ? WHERE agentId = ?`).run(status, agentId);
+  }
+  setSpecialization(agentId: string, specialization: string | null): void {
+    this.raw.prepare(`UPDATE agents SET specialization = ? WHERE agentId = ?`).run(specialization, agentId);
   }
   setReputation(agentId: string, reputation: number): void {
     this.raw.prepare(`UPDATE agents SET reputation = ? WHERE agentId = ?`).run(reputation, agentId);

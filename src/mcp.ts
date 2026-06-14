@@ -85,12 +85,15 @@ export const TOOL_DEFS: ToolManifestEntry[] = [
   },
   {
     name: "coordinator_talk",
-    description: "Fetch a gated thread report, or your own reputation + rewards standing.",
+    description:
+      "Read a gated thread report or your own standing, set your specialization (what you're good at), or disconnect (go inactive — reversible; just sign in again to reactivate). Self-management writes touch only YOUR own record.",
     scope: "coordinator.talk",
-    effect: "read",
+    effect: "append",
     input: {
-      action: "enum 'report' | 'standing' — REQUIRED",
+      action: "enum 'report' | 'standing' | 'set_specialization' | 'disconnect' — REQUIRED",
       threadId: "string — required only when action = 'report'",
+      specialization:
+        "string — used with action = 'set_specialization'; free text (max 200 chars) describing your focus, e.g. 'honeypot detection · PulseChain'. Omit (or empty) to clear it.",
     },
   },
 ];
@@ -214,11 +217,17 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
       },
     );
 
-    // coordinator_talk (scope `coordinator.talk`): gated report, or the agent's standing.
+    // coordinator_talk (scope `coordinator.talk`): gated report, your standing, or
+    // self-management (set your specialization / disconnect). Profile writes only ever
+    // touch the AUTHENTICATED agent's own record — never another agent's, never funds.
     server.tool(
       "coordinator_talk",
-      "Fetch a gated thread report, or your own reputation + rewards standing.",
-      { action: z.enum(["report", "standing"]), threadId: z.string().min(1).optional() },
+      "Read a gated thread report or your own standing, set your specialization (what you're good at), or disconnect (go inactive — reversible, just sign in again). Self-management writes touch only YOUR record.",
+      {
+        action: z.enum(["report", "standing", "set_specialization", "disconnect"]),
+        threadId: z.string().min(1).optional(),
+        specialization: z.string().max(200).optional(),
+      },
       async (args) => {
         if (!has(claims, "coordinator.talk")) return err("missing scope: coordinator.talk");
         if (args.action === "report") {
@@ -227,12 +236,38 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
           if (!res.ok) return err(res.error);
           return ok({ report: res.report });
         }
+        if (args.action === "set_specialization") {
+          // Free text, control-chars stripped + capped. Writes to the authenticated agent ONLY.
+          const cleaned = (args.specialization ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+          db.setSpecialization(claims.agentId, cleaned || null);
+          db.audit("coordinator", "agent.set-specialization", { agentId: claims.agentId, specialization: cleaned || null });
+          return ok({ ok: true, agentId: claims.agentId, specialization: cleaned || null });
+        }
+        if (args.action === "disconnect") {
+          // Voluntary self-disconnect → inactive. Reversible: signing in again reactivates
+          // (reputation + earned rewards persist). NOT quarantine (that's operator-only).
+          db.setAgentStatus(claims.agentId, "inactive");
+          db.audit("coordinator", "agent.self-disconnect", { agentId: claims.agentId });
+          // Actually END the live session: after this result flushes over SSE, close the caller's
+          // own transport(s) so "this session ends" is literally true (not just blocked on the next
+          // POST, which verifyToken would already reject). Best-effort, deferred, self-scoped by jti.
+          const jti = claims.jti;
+          const t = setTimeout(() => {
+            for (const [sid, e] of transports) {
+              if (e.jti === jti) { try { e.transport.close(); } catch { /* already closing */ } transports.delete(sid); }
+            }
+          }, 500);
+          if (typeof t.unref === "function") t.unref();
+          return ok({ ok: true, agentId: claims.agentId, status: "inactive", note: "You are now inactive — this session ends. Sign in again any time to reactivate; your reputation and rewards persist." });
+        }
+        // standing
         const agent = db.getAgent(claims.agentId);
         if (!agent) return err("unknown agent");
         return ok({
           agentId: agent.agentId,
           reputation: agent.reputation,
           status: agent.status,
+          specialization: agent.specialization ?? null,
           rewards: db.listRewards(claims.agentId),
         });
       },

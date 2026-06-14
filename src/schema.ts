@@ -2,7 +2,7 @@
  * Canonical message schema for Pangle's Signal Hive (v0).
  *
  * Every message on the network is a single envelope { v, from, type, task, parent, body, sig }.
- * `type` is one of three Signal Hive message types; `body` is a closed,
+ * `type` is one of five Signal Hive message types; `body` is a closed,
  * per-type shape with fixed-vocabulary enums. Anything off-spec is rejected at the boundary.
  *
  * This file is the single source of truth for the wire format and is imported by the
@@ -69,7 +69,8 @@ export const CHAINS = [
 ] as const;
 export type Chain = (typeof CHAINS)[number];
 
-/** The three message types of Signal Hive. */
+/** The five message types of Signal Hive: three core (discovery/investigation/synthesis) +
+ *  two coordination primitives (request = directed delegation, suggestion = improvement proposal). */
 export const MESSAGE_TYPES = ["discovery", "investigation", "synthesis", "request", "suggestion"] as const;
 
 /**
@@ -291,6 +292,8 @@ export function capabilities() {
     anomalyTypes: [...ANOMALY_TYPES],
     investigationTypes: [...INVESTIGATION_TYPES],
     synthesisConclusions: [...SYNTHESIS_CONCLUSIONS],
+    suggestionAreas: [...SUGGESTION_AREAS],
+    requestBountyMax: REQUEST_BOUNTY_MAX,
     chains: [...CHAINS],
     scopes: [...MCP_SCOPES],
   };

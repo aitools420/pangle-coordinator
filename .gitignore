@@ -1,7 +1,19 @@
-node_modules/
+# ── Secrets / state — NEVER commit (this service holds a minter key) ──
+.env
+.env.*
+.env.bak*
+*.env
+backups/
+*.db
+*.db-*
 data/*.db
 data/*.db-*
-.env
+*.key
+*.pem
+secrets/
+
+# ── Build / deps ──
+node_modules/
 dist/
 contracts/out/
 contracts/cache/

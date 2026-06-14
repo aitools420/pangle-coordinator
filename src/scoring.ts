@@ -116,7 +116,15 @@ export class Scoring {
       // is cap-checked separately; if it trips the cap the request stays open + the normal reward stands.
       if (msg.type === "investigation") {
         const reqThread = this.db.getThread(msg.threadId);
-        if (reqThread && reqThread.kind === "request" && reqThread.bounty > 0 && reqThread.status === "open") {
+        if (reqThread && reqThread.kind === "request" && reqThread.bounty > 0 && reqThread.status === "open"
+            && reqThread.discovererAgentId === msg.agentId) {
+          this.db.audit("coordinator", "request-self-fulfill-blocked", { threadId: reqThread.id, agentId: msg.agentId });
+        }
+        if (reqThread && reqThread.kind === "request" && reqThread.bounty > 0 && reqThread.status === "open"
+            // KL-11 guard: an agent cannot collect the bounty on its OWN request (self-dealing mint lever).
+            // The investigation still earns its normal reward above; only the bounty is withheld and the
+            // request stays open for a genuine third-party fulfiller. Safe under any bounty-funding model.
+            && reqThread.discovererAgentId !== msg.agentId) {
           const bountyAmt = BigInt(reqThread.bounty) * 10n ** 18n;
           if (this.mintAllowed(bountyAmt, msg.agentId)) {
             const btx = await this.chain.mintReward(to, bountyAmt);
