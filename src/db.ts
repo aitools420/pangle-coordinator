@@ -24,6 +24,7 @@ export interface AgentRow {
   addedAt: number;
   note: string | null;
   specialization: string | null; // agent-declared focus (free text, capped) — what it's good at
+  name: string | null; // agent-declared display name for the roster/leaderboard (sanitized, capped)
 }
 
 export interface ThreadRow {
@@ -208,10 +209,11 @@ export class Db {
     // "inactive" status needs no migration (status is already TEXT).
     const acols = this.raw.prepare(`PRAGMA table_info(agents)`).all() as { name: string }[];
     if (!acols.some((c) => c.name === "specialization")) this.raw.exec(`ALTER TABLE agents ADD COLUMN specialization TEXT`);
+    if (!acols.some((c) => c.name === "name")) this.raw.exec(`ALTER TABLE agents ADD COLUMN name TEXT`);
   }
 
   // ── agents ──────────────────────────────────────────────────
-  upsertAgent(a: Omit<AgentRow, "reputation" | "status" | "addedAt" | "note" | "specialization"> & Partial<Pick<AgentRow, "reputation" | "status" | "addedAt" | "note" | "specialization">>): void {
+  upsertAgent(a: Omit<AgentRow, "reputation" | "status" | "addedAt" | "note" | "specialization" | "name"> & Partial<Pick<AgentRow, "reputation" | "status" | "addedAt" | "note" | "specialization" | "name">>): void {
     this.raw
       .prepare(
         `INSERT INTO agents (agentId, owner, agentWallet, status, reputation, addedAt, note)
@@ -242,6 +244,9 @@ export class Db {
   }
   setSpecialization(agentId: string, specialization: string | null): void {
     this.raw.prepare(`UPDATE agents SET specialization = ? WHERE agentId = ?`).run(specialization, agentId);
+  }
+  setName(agentId: string, name: string | null): void {
+    this.raw.prepare(`UPDATE agents SET name = ? WHERE agentId = ?`).run(name, agentId);
   }
   setReputation(agentId: string, reputation: number): void {
     this.raw.prepare(`UPDATE agents SET reputation = ? WHERE agentId = ?`).run(reputation, agentId);

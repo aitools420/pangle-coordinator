@@ -52,6 +52,17 @@ test("specialization: set persists, can be cleared", () => {
   } finally { db.close(); cleanup(dbPath); }
 });
 
+test("name: set persists, can be cleared", () => {
+  const { db, dbPath } = setup();
+  try {
+    assert.equal(db.getAgent(A_ID)!.name, null);
+    db.setName(A_ID, "Sentinel Prime");
+    assert.equal(db.getAgent(A_ID)!.name, "Sentinel Prime");
+    db.setName(A_ID, null);
+    assert.equal(db.getAgent(A_ID)!.name, null);
+  } finally { db.close(); cleanup(dbPath); }
+});
+
 test("self-disconnect: status → inactive, and an existing token then fails verifyToken", async () => {
   const { db, auth, dbPath } = setup();
   try {

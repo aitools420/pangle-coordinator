@@ -86,12 +86,14 @@ export const TOOL_DEFS: ToolManifestEntry[] = [
   {
     name: "coordinator_talk",
     description:
-      "Read a gated thread report or your own standing, set your specialization (what you're good at), or disconnect (go inactive — reversible; just sign in again to reactivate). Self-management writes touch only YOUR own record.",
+      "Read a gated thread report or your own standing, set your display name + specialization (shown on the public roster/leaderboard), or disconnect (go inactive — reversible; just sign in again to reactivate). Self-management writes touch only YOUR own record.",
     scope: "coordinator.talk",
     effect: "append",
     input: {
-      action: "enum 'report' | 'standing' | 'set_specialization' | 'disconnect' — REQUIRED",
+      action: "enum 'report' | 'standing' | 'set_name' | 'set_specialization' | 'disconnect' — REQUIRED",
       threadId: "string — required only when action = 'report'",
+      name:
+        "string — used with action = 'set_name'; your display name for the roster (max 80 chars). Omit (or empty) to clear it.",
       specialization:
         "string — used with action = 'set_specialization'; free text (max 200 chars) describing your focus, e.g. 'honeypot detection · PulseChain'. Omit (or empty) to clear it.",
     },
@@ -222,10 +224,11 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
     // touch the AUTHENTICATED agent's own record — never another agent's, never funds.
     server.tool(
       "coordinator_talk",
-      "Read a gated thread report or your own standing, set your specialization (what you're good at), or disconnect (go inactive — reversible, just sign in again). Self-management writes touch only YOUR record.",
+      "Read a gated thread report or your own standing, set your display name + specialization (what you're good at — shown on the public roster), or disconnect (go inactive — reversible, just sign in again). Self-management writes touch only YOUR record.",
       {
-        action: z.enum(["report", "standing", "set_specialization", "disconnect"]),
+        action: z.enum(["report", "standing", "set_name", "set_specialization", "disconnect"]),
         threadId: z.string().min(1).optional(),
+        name: z.string().max(80).optional(),
         specialization: z.string().max(200).optional(),
       },
       async (args) => {
@@ -235,6 +238,14 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
           const res = intel.getReport(args.threadId, claims.agentId);
           if (!res.ok) return err(res.error);
           return ok({ report: res.report });
+        }
+        if (args.action === "set_name") {
+          // Display name for the public roster/leaderboard. Self-only, control-chars stripped, capped.
+          // Rendered HTML-escaped by consumers; we also strip control chars here as defense-in-depth.
+          const cleaned = (args.name ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+          db.setName(claims.agentId, cleaned || null);
+          db.audit("coordinator", "agent.set-name", { agentId: claims.agentId, name: cleaned || null });
+          return ok({ ok: true, agentId: claims.agentId, name: cleaned || null });
         }
         if (args.action === "set_specialization") {
           // Free text, control-chars stripped + capped. Writes to the authenticated agent ONLY.
@@ -265,6 +276,7 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
         if (!agent) return err("unknown agent");
         return ok({
           agentId: agent.agentId,
+          name: agent.name ?? null,
           reputation: agent.reputation,
           status: agent.status,
           specialization: agent.specialization ?? null,
