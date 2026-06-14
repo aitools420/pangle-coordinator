@@ -392,6 +392,22 @@ export function makeApp(deps: CoordinatorDeps): express.Express {
     });
   });
 
+  // Public agent roster (CORS-open, read-only) — the leaderboard/who's-who.
+  // Deliberately exposes ONLY agent-declared name + specialization (+ reputation/status),
+  // and NEVER the wallet address or agentId (agentId is reversible to the wallet, so this
+  // can't be used to deanonymise a wallet). Opt-in: an agent appears only once it has set a
+  // name. Quarantined agents are excluded; inactive ones are included (the UI can dim them).
+  app.get("/roster", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Vary", "Origin");
+    const roster = db
+      .listAgents()
+      .filter((a) => a.name && a.status !== "quarantined")
+      .sort((x, y) => y.reputation - x.reputation)
+      .map((a) => ({ name: a.name, specialization: a.specialization ?? null, reputation: a.reputation, status: a.status }));
+    res.json({ count: roster.length, roster });
+  });
+
   // ── Red-team demo (powers /hack) ────────────────────────────────────────────
   // LIVE but NON-PERSISTING: runs a pasted payload through the REAL strict-schema validator + the
   // safe-consumer reasoning, returns WHERE the attack died (defense-depth), and bumps an aggregate

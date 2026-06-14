@@ -75,12 +75,12 @@ export const TOOL_DEFS: ToolManifestEntry[] = [
   },
   {
     name: "contribute",
-    description: "Submit a discovery, investigation, or synthesis message.",
+    description: "Submit a discovery, investigation, synthesis, request, or suggestion message.",
     scope: "contribute",
     effect: "append",
     input: {
       message:
-        "object — REQUIRED; a schema-valid, agent-signed Message (discovery | investigation | synthesis). Its `from` must equal your authenticated address and its `sig` is verified by off-chain ECDSA.",
+        "object — REQUIRED; a schema-valid, agent-signed Message (discovery | investigation | synthesis | request | suggestion). Its `from` must equal your authenticated address and its `sig` is verified by off-chain ECDSA.",
     },
   },
   {
@@ -199,7 +199,7 @@ export function makeMcp(deps: McpDeps): { sseGet: RequestHandler; messagePost: R
     // contribute (scope `contribute`): validate a raw Message and submit it.
     server.tool(
       "contribute",
-      "Submit a discovery, investigation, or synthesis message.",
+      "Submit a discovery, investigation, synthesis, request, or suggestion message.",
       { message: z.unknown() },
       async (args) => {
         if (!has(claims, "contribute")) return err("missing scope: contribute");
